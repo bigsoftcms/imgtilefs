@@ -12,12 +12,12 @@ import cv2
 from fuse import FUSE, FuseOSError, Operations, LoggingMixIn
 
 import imgtile_ppm
+import imgtile_kro
 
 class ImageTileFS(LoggingMixIn, Operations):	
 	def __init__(self, root):
 		self.log.info("pouet")
 		self.root = os.path.realpath(root)
-		self.rwlock = Lock()
 		self.map = dict() # filename vs. map of tile names vs. tiles
 		self._v2r = dict()
 	
@@ -60,6 +60,7 @@ class ImageTileFS(LoggingMixIn, Operations):
 				'st_gid', 'st_mode', 'st_mtime', 'st_nlink', 'st_size', 'st_uid'))
 			res['st_size'] = self.map[org][name].size()
 			res['st_mode'] = 0o0100000 | 0o444
+			#res['st_mtime'] -= 1.0
 		else:
 			#print("other")
 			st = os.lstat(path)
@@ -91,22 +92,21 @@ class ImageTileFS(LoggingMixIn, Operations):
 	
 	def read(self, path, size, offset, fh):
 		#print("read %s %d %d" % (path, offset, size))
-		with self.rwlock:
-			if path in self._v2r:
-				org = self._v2r[path]
-				name = os.path.basename(path)
-				s = self.map[org][name]
-				return s.read(offset, size)
-			else:
-				#print("cannot read")
-				raise NotImplementedError()
+		if path in self._v2r:
+			org = self._v2r[path]
+			name = os.path.basename(path)
+			s = self.map[org][name]
+			return s.read(offset, size)
+		else:
+			#print("cannot read")
+			raise NotImplementedError()
 		
 	def readdir(self, path, fh):
 		#print("readdir %s %s" % (path, fh))
 		files2 = []
 		files = os.listdir(path)
 		for fn in files:
-			if fn.endswith(".ppm"):
+			if fn.endswith(".ppm") or fn.endswith(".kro"):
 				files2 += self.build(path, fn)
 		return ['.', '..'] + files2
 
@@ -138,9 +138,7 @@ class ImageTileFS(LoggingMixIn, Operations):
 	utimens = os.utime
 	
 	def write(self, path, data, offset, fh):
-		with self.rwlock:
-			os.lseek(fh, offset, 0)
-			return os.write(fh, data)
+		raise NotImplementedError()
 
 	def build(self, dirname, basename):
 		path = os.path.join(dirname, basename)
@@ -160,6 +158,30 @@ class ImageTileFS(LoggingMixIn, Operations):
 						name = "%s@%05dx%05d+%05d+%05d.ppm" \
 						 % (basename[:-4], iw, ih, idx_y * th, idx_x * tw)
 						subimages[name] = imgtile_ppm.ImageSlice(
+						 img,
+						 idx_y * th,
+						 idx_x * tw,
+						 idx_y * th + ih,
+						 idx_x * tw + iw,
+						)
+						subpath = os.path.join(dirname, name)
+						self._v2r[subpath] = path
+				self.map[path] = subimages
+			elif basename.endswith(".kro"):
+				img = imgtile_kro.imread(path)
+				tw = 1024
+				th = 1024
+				h, w = img.shape[:2]
+				nb_x = w//tw
+				nb_y = h//th
+				subimages = dict()
+				for idx_y in range(nb_y):
+					for idx_x in range(nb_x):
+						ih = min(th, h - idx_y * th)
+						iw = min(tw, w - idx_x * tw)
+						name = "%s@%05dx%05d+%05d+%05d.ppm" \
+						 % (basename[:-4], iw, ih, idx_y * th, idx_x * tw)
+						subimages[name] = imgtile_kro.ImageSlice(
 						 img,
 						 idx_y * th,
 						 idx_x * tw,
